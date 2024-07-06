@@ -1225,3 +1225,439 @@ You will use PyTorch to implement the model.  We've provided a little bit of cod
 """
 
 # Import the necessary libraries
+import math
+import time
+import random
+import os, sys
+import json
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from torch.autograd import Variable
+from torch.utils.data import Dataset, DataLoader
+from matplotlib import pyplot as plt
+from functools import partial
+from tqdm import tqdm
+
+## Please do not change anything in this code block.
+
+def collate_ngram(batch, text_pipeline):
+    """
+    Converts the text in the batch to tokens
+    and maps the tokens to indices in the vocab.
+    The text in the batch is a list of ngrams
+    i.e. if N=3, then text contains 3 tokens in a list
+    and batch is a list of such texts.
+
+    Returns:
+        batch_input [pytorch tensor]:
+            input for n-gram model with size batch_size*(ngram-1)
+        batch_output [pytorch tensor]:
+            output for n-gram model with size batch_size
+    """
+
+    batch_input, batch_output = [], []
+
+    # Process each text in the batch
+    for text in batch:
+        token_id_sequence = text_pipeline(text)
+        # last token is the output, and
+        #  pervious ngram-1 tokens are inputs
+        output = token_id_sequence.pop()
+        input = token_id_sequence
+        batch_input.append(input)
+        batch_output.append(output)
+
+    # Convert lists to PyTorch tensors and moves to the gpu (if using)
+    batch_input = torch.tensor(batch_input, dtype=torch.long)
+    batch_output = torch.tensor(batch_output, dtype=torch.long)
+    if USE_CUDA:
+        batch_input = batch_input.cuda()
+        batch_output = batch_output.cuda()
+
+    return batch_input, batch_output
+
+
+def get_dataloader(input_text, vocab, ngram, batch_size, shuffle):
+    """
+    Creates a dataloader for the n-gram model which
+    takes in a list of list of tokens, appends the START token
+    at the starting of each text, and converts text into ngrams.
+
+    Example: For a trigram model, the list of characters are
+        ["n", "a", "v", "r"]
+    will be converted into lists
+        ["n", "a", "v"], ["a", "v", "r"]
+
+    For each ngram, first ngram-1 tokens are input and last token
+    is the output. Each token is converted into a index in the vocab.
+    The dataloader generates a batch of input, output pairs as
+    pytorch tensors.
+
+
+    Args:
+        input_text [list[list[str]]]: list of list of tokens
+        vocab [torchtext.vocab]: vocabulary of the corpus
+    """
+
+    ngram_sequences = []
+    for text in input_text:
+        if text[0] == START:
+            text = [START]*(N_GRAM_LENGTH-2) + text
+        else:
+            text = [START]*(N_GRAM_LENGTH-1) + text
+
+        # Create training pairs for each char in the text
+        for idx in range(len(text) - ngram + 1):
+            ngram_sequence = text[idx : (idx + ngram)]
+            ngram_sequences.append(ngram_sequence)
+
+    text_pipeline = lambda x: vocab(x)
+    collate_fn = collate_ngram
+
+    # creates a DataLoader for the dataset
+
+    """
+    dataloader documentation
+    https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader
+    """
+
+    dataloader = DataLoader(
+        ngram_sequences,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=partial(collate_fn, text_pipeline=text_pipeline),
+        )
+    return dataloader
+
+"""#### FNN Implementation
+
+**Feed-forward Neural Language Modelling**
+
+Like the n-gram LM, the feedforward neural LM approximates the probability of a char given the entire prior context $P(w_t|w_{1:t−1})$ by approximating based on the $N-1$ previous chars:
+$$P(w_t|w_1,...,w_{t−1}) ≈ P(w_t|w_{t−N+1},...,w_{t−1})$$
+
+
+Implement the FNN LM given in this paper: [Neural Probabilistic Language Model](https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf)
+
+The architecture of the FNN can be described by the equation and figure:
+
+$$y = b + W x + U \text t \text a \text n \text h (d + H x)$$
+
+- $x$ is of size $(ngram-1)*m$ where $m$ is the size embedding dimensions
+- $y$ is of size $V*1$ where $V$ is the vocabulary size
+
+![FNN_LM](https://drive.google.com/uc?id=1aQhkXjWelHfiBfmBQV3z5TjHFNMtqtzT)
+
+
+**Some tips**:
+- embed the chars with dimension $m$ (example, $60$), then flatten into a single embedding for  $n-1$  chars (with size  $(n-1)*m$ )
+- you can use Adam or Stochastic Gradient Descent (SGD) for optimising the cross entropy loss
+- If you are using SGD, you may want to use momentum, and a learning rate scheduler
+- do early stopping based on validation set loss or perplexity
+
+**Important**: Fix seed as 42 whenever performing any randomized operations, e.g., initializing ML models.
+"""
+
+"""
+Implementation of a PyTorch Module that defines the neural network for a language model.
+"""
+
+class FNN_LM(nn.Module):
+    def __init__(self, vocab_size, emb_size, hid_size, ngram):
+        """
+        Initialize the Feedforward Neural Network Language Model.
+
+        Args:
+            vocab_size (int): Size of the vocabulary.
+            emb_size (int): Size of the embedding layer.
+            hid_size (int): Size of the hidden layer.
+            ngram (int): Size of the n-gram context.
+        """
+        #BEGIN CODE
+        super(FNN_LM, self).__init__()
+        self.ngram = ngram
+        self.vocab_size = vocab_size
+        self.hid_size = hid_size
+        self.emb_size = emb_size
+        torch.manual_seed(42)
+        self.C = nn.Embedding(vocab_size, emb_size)
+        self.H = nn.Linear(emb_size * (ngram - 1), hid_size, bias=True)
+        self.U = nn.Linear(hid_size, vocab_size)
+        self.W = nn.Linear(emb_size * (ngram - 1), vocab_size, bias=True)
+        # END CODE
+    def forward(self, chars):
+        """
+        Forward pass of the model.
+
+        Args:
+            chars (torch.Tensor): Input tensor with shape [batch_size x ngram-1].
+
+        Returns:
+            logits (torch.Tensor): Tensor of log probabilities with shape [batch_size x vocab_size].
+        """
+        #BEGIN CODE
+        emblayer = self.C(chars)
+        emblayer = emblayer.view(-1, self.emb_size * (self.ngram - 1))
+
+        hidenLayer = self.U(torch.tanh(self.H(emblayer)))
+        oplayer = self.W(emblayer)
+        logits = hidenLayer + oplayer
+        # END CODE
+
+        return logits
+
+"""**The following is the Trainer class for the FNN LM. Add your code for the `training` and `validation` loops.**"""
+
+"""
+Implementation of a trainer for a neural n-gram language model using PyTorch.
+"""
+
+class NeuralNGramTrainer:
+  # BEGIN CODE
+    def __init__(
+        self,
+        ngram,
+        model,
+        optimizer,
+        criterion,
+        train_dataloader,
+        valid_dataloader,
+        epochs,
+        use_cuda,
+        vocab,
+        model_dir,
+        scheduler=None,
+    ):
+
+        self.ngram = ngram
+        self.model = model
+        self.epochs = epochs
+        self.optimizer = optimizer
+        self.criterion = criterion
+        self.train_dataloader = train_dataloader
+        self.valid_dataloader = valid_dataloader
+        self.use_cuda = use_cuda
+        self.model_dir = model_dir
+        self.loss = {"train": [], "val": []}
+        self.vocab = vocab
+        self.scheduler = scheduler
+
+        if self.use_cuda:
+            self.model = self.model.cuda()
+
+    def train_step(self):
+        """
+        Trains the model with train_dataloader and validates using valid_dataloader
+
+        """
+        # You may change the input arguments to this function,
+        # but make sure to also change the code wherever this function is called
+
+        # ADD YOUR CODE HERE
+        # FOR TRAINING & VALIDATION
+        self.model.train()
+        train_loss = 0
+
+        with torch.set_grad_enabled(True):
+            for batch, (X, y) in enumerate(self.train_dataloader):
+                y_pred = self.model(X.long())
+                loss = self.criterion(y_pred, y)
+                train_loss += loss.item()
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+
+        train_loss = train_loss / len(self.train_dataloader)
+        return train_loss
+
+    def val_step(self):
+        """
+        Perform one validation step.
+
+        Returns:
+            float: Average validation loss for one epoch.
+        """
+        self.model.eval()
+        val_loss = 0
+
+        with torch.set_grad_enabled(False):
+            for batch, (X, y) in enumerate(self.valid_dataloader):
+                y_pred_logits = self.model(X.long())
+                loss = self.criterion(y_pred_logits, y)
+                val_loss += loss.item()
+
+        val_loss = val_loss / len(self.valid_dataloader)
+        return val_loss
+
+    def train(self):
+        """
+        Train the model.
+
+        Returns:
+            dict: Training and validation losses.
+        """
+        for epoch in range(self.epochs):
+            train_loss = self.train_step()
+            val_loss = self.val_step()
+            self.loss['train'].append(train_loss)
+            self.loss['val'].append(val_loss)
+
+            if self.scheduler:
+                self.scheduler.step()
+
+        return self.loss
+
+    def plot_losses(self):
+        """
+        Plot the training and validation losses.
+        """
+        plt.plot(self.loss['train'], label='Train Loss')
+        plt.plot(self.loss['val'], label='Validation Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.show()
+
+    def save_model(self):
+        """
+        Save the final trained model.
+        """
+        model_path = os.path.join(self.model_dir, "model.pt")
+        torch.save(self.model, model_path)
+
+    def save_loss(self):
+        """
+        Save the train/validation loss to a JSON file.
+        """
+        loss_path = os.path.join(self.model_dir, "loss.json")
+        with open(loss_path, "w") as fp:
+            json.dump(self.loss, fp)
+
+    def get_next_char_probabilities(self):
+        """
+        Return a dictionary of probabilities for each char in the vocabulary
+        with a default starting sequence of [START]*(ngram-1)
+        Example:
+            If ngram=3, then default starting sequence for which
+            probabilities have to be returned is
+            [START, START]
+
+        Returns:
+            dictionary with key: char, value: probability
+
+        """
+        # ADD YOUR CODE HERE
+        self.model.eval()
+        next_char_probabilities = {}
+        prefix = ['<s>'] * (self.ngram - 1)
+
+        with torch.no_grad():
+            input_tensor = torch.tensor([self.vocab[token] for token in prefix], dtype=torch.long).unsqueeze(0)
+            logits = self.model(input_tensor)
+            probs = F.softmax(logits, dim=1)
+            for ind, val in enumerate(probs.squeeze(0)):
+                next_char_probabilities[self.vocab.get_itos()[ind]] = val.item()
+
+        return next_char_probabilities
+
+    def generate_names(self, k, n, prefix=None):
+        """
+        Given a prefix, generate k names according to the model.
+        The default prefix is None.
+
+        Args:
+            k [int]: Number of names to generate
+            n [int]: Maximum length (number of tokens) in the generated name
+            prefix [list of tokens]: Prefix after which the names have to be generated
+
+        Returns:
+            list of generated names [list[str]]
+        """
+        names = []
+        self.model.eval()
+
+        with torch.no_grad():
+            i = 0
+            while i < k:
+                name = ['<s>'] * (self.ngram - 1)
+                if prefix:
+                    name.extend(prefix)
+                j = 0
+                while len(name) < n and '</s>' not in name:
+                    name_tensor = torch.tensor([self.vocab[token] for token in name[j:j + self.ngram - 1]], dtype=torch.long).unsqueeze(0)
+                    logits = self.model(name_tensor)
+                    probs = F.softmax(logits, dim=1)
+                    next_token = torch.multinomial(probs, num_samples=1)
+                    next_token_str = self.vocab.get_itos()[next_token.item()]
+                    name.append(next_token_str)
+                    j += 1
+
+                name = name[self.ngram - 2:-1]
+                name = ''.join(name)
+                if name not in names:
+                    names.append(name)
+                    i += 1
+        return names
+
+    def get_perplexity(self, text):
+        """
+        Returns the perplexity of the model on text as a float.
+
+        Args:
+            text [list[list[str]]]: list of tokenised names
+            > Example:
+            [['<s>', 'a', 'a', 'b', 'i', 'd', '</s>'],
+            ['<s>', 'a', 'a', 'b', 'i', 'd', 'a', '</s>']]
+
+        Returns:
+            perplexity [float]
+
+        """
+        tokens = sum(len(name) for name in text)
+        self.model.eval()
+        total_log_prob = 0.0
+
+        eval_dataloader = get_dataloader(text, self.vocab, ngram=self.ngram, batch_size=64, shuffle=True)
+
+        with torch.no_grad():
+            for batch, (X, y) in enumerate(eval_dataloader):
+                logits = self.model(X.long())
+                probs = F.softmax(logits, dim=1)
+                y_list = y.tolist()
+                for i in range(len(y_list)):
+                    total_log_prob += math.log(probs[i, y_list[i]].item())
+
+        perplexity = math.exp(-total_log_prob / tokens)
+        return perplexity
+
+    def get_most_likely_chars(self, sequence, k):
+        """
+        Given a sequence of characters, outputs k most likely characters after the sequence.
+
+        Args:
+            sequence [list[str]]: list of characters
+            k [int]: number of most likely characters to return
+
+        Returns:
+            chars [list[str]]: *Ordered* list of most likely characters
+                        (with charcater at index 0 being the most likely and
+                        character at index k-1 being the least likely)
+
+        """
+        self.model.eval()
+        most_likely_chars = []
+        seq = sequence[-self.ngram + 1:]
+
+        with torch.no_grad():
+            input_tensor = torch.tensor([self.vocab[token] for token in seq], dtype=torch.long).unsqueeze(0)
+            logits = self.model(input_tensor)
+            probs = F.softmax(logits, dim=1)
+            top_k_probs, top_k_indices = torch.topk(probs, k)
+
+            for token_index in top_k_indices.squeeze(0):
+                most_likely_chars.append(self.vocab.get_itos()[token_index.item()])
+
+        return most_likely_chars
+# END CODE
