@@ -1661,3 +1661,81 @@ class NeuralNGramTrainer:
 
         return most_likely_chars
 # END CODE
+
+"""### Eval"""
+
+## Please do not change anything in this code block.
+
+def eval_rnn_model(model, ds, ds_name, eval_prefixes, eval_sequences, num_names=5):
+    """
+    Runs the following evaluations on n-gram models:
+    (1) checks if probability distribution returned by model.get_next_char_probabilities() sums to one
+    (2) checks the perplexity of the model
+    (3) generates names using model.generate_names()
+    (4) generates names given a prefix using model.generate_names()
+    (4) output most likely characters after a given sequence of chars using model.get_most_likely_chars()
+    """
+
+    # (1) checks if probability distributions sum to one
+    is_valid = check_validity(model, 1, True)
+    print(f'EVALUATION probability distribution is valid: {is_valid}')
+
+    # (2) evaluate the perplexity of the model on the dataset
+    print(f'EVALUATION of RNN on {ds_name} perplexity:',
+        model.get_perplexity(ds))
+
+    # (3) generate a few names
+    generated_names = ", ".join(model.generate_names(k=num_names, n=MAX_NAME_LENGTH))
+    print(f'EVALUATION RNN generated names are {generated_names}')
+
+    # (4) generate a few names given a prefix
+    for prefix in eval_prefixes:
+        generated_names_with_prefix = ", ".join(model.generate_names(k=num_names, n=MAX_NAME_LENGTH, prefix=prefix))
+        prefix = ''.join(prefix)
+        print(f'EVALUATION RNN generated names with prefix {prefix} are {generated_names_with_prefix}')
+
+    # (5) get most likely characters after a sequence
+    for sequence in eval_sequences:
+        most_likely_chars = ", ".join(model.get_most_likely_chars(sequence=sequence, k=num_names))
+        sequence = "".join(sequence)
+        print(f"EVALUATION RNN the top most likely chars after {sequence} are {most_likely_chars}")
+
+eval_rnn_model(trainer, ds=validation_text, ds_name='valid', eval_prefixes=eval_prefixes, eval_sequences=eval_sequences, num_names=5)
+
+START = "<s>"   # Start-of-name token
+END = "</s>"    # End-of-name token
+UNK = "<unk>"   # token representing out of unknown (or out of vocabulary) tokens
+
+# ADD YOUR CODE HERE
+# change the directory name with your SAPname and SRno
+
+folder = 'GOUDA_PRITAM_TRILOCHAN_SAVITA_23754/rnn'
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# load the saved model
+model = torch.load(f"{folder}/model.pt", map_location=device)
+vocab = torch.load(f"{folder}/vocab.pt")
+
+# NOTE: if you are **optionally** using additional options for the trainer
+# (e.g., a training scheduler), please add them below.
+trainer = RNNTrainer(
+        model=model,
+        optimizer=None,
+        criterion=None,
+        train_dataloader=None,
+        valid_dataloader=None,
+        epochs=None,
+        use_cuda=USE_CUDA,
+        model_dir=None,
+        vocab=vocab)
+
+# Generate a few names
+names = trainer.generate_names(k=5, n=MAX_NAME_LENGTH, prefix=['a','a','s','h'])
+print(", ".join(names))
+
+# you may use this block to test if your model and vocab load properly,
+# and that your functions are able to generate sentences, calculate perplexity etc.
+
+# Release models we don't need any more.
+del trainer
+del model
