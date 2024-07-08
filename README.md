@@ -1,6 +1,21 @@
 # Modelling-Indian-Names
 Implemented different types of language models for modelling Indian names. There are clearly patterns in Indian names that models could learn, and we start modelling those using n-gram models, then move to neural n-gram and RNN models.
 
+```
+Modelling-Indian-Names
+├── Modelling-Indian-Names.ipynb
+├── main.py
+├── fnn
+│   ├── loss.json
+│   ├── model.pt
+│   └── vocab.pt
+├── rnn
+│   ├── loss.json
+│   ├── model.pt
+│   └── vocab.pt
+└── README.md
+```
+
 ## N-gram language models
 In natural language processing, an n-gram is a sequence of n words. For example, “statistics” is a unigram (n = 1), “machine learning” is a bigram (n = 2), “natural language processing” is a trigram (n = 3). For longer n-grams, people just use their lengths to identify them, such as 4-gram, 5-gram, and so on.
 
